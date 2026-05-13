@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comsol-mcp"
+version = "0.1.9"
+description = "Visible attach-first MCP server for COMSOL Multiphysics Server and Desktop clients."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "mr jiang", email = "jiang-jc24@mails.tsinghua.edu.cn" }
+]
+dependencies = [
+  "mcp",
+  "MPh",
+  "JPype1"
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+keywords = ["comsol", "mcp", "simulation", "multiphysics", "desktop", "server"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+
+[project.scripts]
+comsol-mcp = "comsol_mcp.mcp_server:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["comsol_mcp*"]
+
+[tool.pytest.ini_options]
+markers = [
+  "comsol_server: requires a live COMSOL Multiphysics Server",
+]
+addopts = "-m 'not comsol_server'"

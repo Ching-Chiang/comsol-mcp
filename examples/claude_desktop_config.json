@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "comsol-mcp-server": {
+      "command": "python",
+      "args": [
+        "-m",
+        "comsol_mcp.mcp_server"
+      ],
+      "env": {
+        "COMSOL_ROOT": "C:/Program Files/COMSOL/COMSOL63/Multiphysics",
+        "COMSOL_SERVER_MCP_HOME": "C:/path/to/comsol-server-home"
+      }
+    }
+  }
+}

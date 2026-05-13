@@ -1,0 +1,30 @@
+# Runtime state
+comsol-server-home/
+logs/
+output/
+outputs/
+
+# COMSOL-generated artifacts
+*.mph
+*.mphbin
+*.class
+*.recovery
+*.status
+
+# Distribution
+*.egg-info/
+dist/
+build/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
