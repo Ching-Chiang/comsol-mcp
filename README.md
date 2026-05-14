@@ -15,9 +15,31 @@
 - 连接已有的 COMSOL Multiphysics Server
 - 与 COMSOL Desktop 共享同一个服务端模型状态
 - 支持 visible-main 主模型锁，避免误切换或误保存模型
-- 支持参数设置、表达式求值、几何特征创建/更新/删除、网格和研究运行
+- 支持参数设置、表达式求值、几何特征创建/更新/删除、物理场、变量、求解器配置和研究运行
 - 支持主模型快照、当前模型保存、异步加载大型 `.mph`
-- 公开工具接口稳定，目前注册 35 个 MCP tools
+- 公开工具接口稳定，目前注册 50 个 MCP tools
+
+## 最近功能更新
+
+当前版本从 35 个 MCP tools 扩展到 50 个，重点补齐了真实 COMSOL 建模中经常需要绕回 Java 脚本的部分：
+
+- 新增 9 个物理场与变量工具：列出/创建/删除 physics interface，管理 physics feature，设置选择集，管理变量节点。
+- 新增 6 个求解器与异步工具：列出和创建 solver config，查看和配置 solver feature，后台运行 study 并轮询状态。
+- 增强连接稳定性：为 COMSOL Java I/O 调用加入硬超时保护，避免连接、断开或加载模型时长期卡住 MCP runtime lock。
+- 增强 `evaluate_expressions()`：支持更适合 2D/3D 模型的维度感知聚合、实体选择、时间点选择和结果大小限制。
+- 修复状态报告：连接状态现在从共享 runtime state 动态读取，避免 `server_info()` 等工具显示过期的 disconnected 状态。
+- visible-main 工作流继续保持锁定模型身份，新增工具也纳入 SAFE_READ / SAFE_WRITE 分类。
+
+## 未来聚焦
+
+下一阶段会优先让 COMSOL 日常仿真工作流更少依赖临时 Java 脚本：
+
+- P0：材料管理、网格特征配置、结果后处理与图片/数据导出。
+- P1：多物理耦合、探针管理、插值/解析/分段函数定义。
+- P2：CAD/几何高级操作、工作平面、参数化扫描和自适应网格等高级求解器配置。
+- 测试增强：为 physics、solver、connection timeout 增加更多 mock 单元测试，并保留 live COMSOL Server 集成测试入口。
+
+长期目标是逐步扩展到约 75 个 MCP tools，覆盖 COMSOL 日常仿真的大部分建模、求解和结果提取操作。
 
 ## 适用场景
 
@@ -185,6 +207,27 @@ visible-main 工作流：
 - `run_study(study_tag="")`
 - `run_visible_main_iteration(label, parameters_json="[]", study_tag="")`
 
+物理场与变量：
+
+- `list_physics(component="comp1")`
+- `create_physics(component, tag, physics_type, dimension=0, dependent_variables="u")`
+- `remove_physics(component, tag)`
+- `list_physics_features(component, physics_tag)`
+- `create_physics_feature(component, physics_tag, feature_tag, feature_type, properties_json="[]")`
+- `update_physics_feature(component, physics_tag, feature_tag, properties_json)`
+- `remove_physics_feature(component, physics_tag, feature_tag)`
+- `set_physics_selection(component, physics_tag, feature_tag, entities_json)`
+- `manage_variables(component="comp1", action="list", tag="", expressions_json="[]")`
+
+求解器与异步运行：
+
+- `list_solver_config()`
+- `create_solver_config(sol_tag, study_tag)`
+- `list_solver_features(sol_tag)`
+- `configure_solver(sol_tag, feature_tag, properties_json="[]")`
+- `run_study_async(study_tag="")`
+- `run_study_status(job_id="")`
+
 ## visible-main 锁机制
 
 `load_visible_main_model()` 成功后，MCP 会记录模型的 tag、label 和 path。
@@ -216,11 +259,15 @@ comsol_mcp/
   _connection.py        # 连接生命周期与客户端访问
   _model.py             # 模型采用、清理、visible-main 锁
   _model_ops.py         # 参数、表达式、指标、树和几何纯辅助函数
+  _physics_ops.py       # 物理场与变量纯辅助函数
+  _solver_ops.py        # 求解器配置纯辅助函数
   _tools_connection.py  # 连接相关 MCP tools
   _tools_workflow.py    # 工作流和 visible-main tools
   _tools_model.py       # 模型创建、加载、清理 tools
   _tools_params.py      # 参数、表达式、指标 tools
   _tools_geometry.py    # 组件、几何、网格、特征 tools
+  _tools_physics.py     # 物理场、physics feature、变量 tools
+  _tools_solver.py      # 求解器配置和异步 study tools
   _tools_snapshot.py    # 迭代、快照和保存 tools
   mcp_server.py         # 入口与工具注册
 ```
@@ -258,9 +305,30 @@ steps, and saved snapshots evolve in COMSOL Desktop.
 - Attach to an existing COMSOL Multiphysics Server
 - Share one server-side model with COMSOL Desktop
 - Lock the visible main model to prevent accidental model switching
-- Set parameters, evaluate expressions, edit geometry features, run mesh and studies
+- Set parameters, evaluate expressions, edit geometry and physics features, configure solvers, run mesh and studies
 - Save main-model snapshots and handle large `.mph` loads asynchronously
-- Stable MCP tool surface with 35 registered tools
+- Stable MCP tool surface with 50 registered tools
+
+### Recent Updates
+
+The current version expands the tool surface from 35 to 50 MCP tools and removes several places where users previously had to fall back to ad hoc Java scripts:
+
+- Added 9 physics and variable tools for physics interfaces, physics features, selections, and variable nodes.
+- Added 6 solver and async tools for solver configs, solver features, background study execution, and polling.
+- Added hard timeout protection around slow COMSOL Java I/O calls so connect, disconnect, and model load operations do not permanently block the MCP runtime lock.
+- Enhanced `evaluate_expressions()` with dimension-aware aggregation, entity selection, time-point selection, and result-size limits.
+- Fixed runtime status reporting so connection state is read from shared state rather than stale imported values.
+
+### Future Focus
+
+The next releases will focus on reducing the remaining need for handwritten COMSOL Java scripts:
+
+- P0: material management, mesh feature configuration, result plots, image export, and data export.
+- P1: multiphysics couplings, probes, and interpolation/analytic/piecewise functions.
+- P2: CAD import, advanced geometry workflows, work planes, parametric sweeps, and adaptive mesh configuration.
+- Testing: broader unit tests for physics, solver, and timeout behavior, plus live COMSOL Server integration scenarios.
+
+The long-term target is about 75 MCP tools covering most day-to-day COMSOL modeling, solving, and result extraction workflows.
 
 ### Requirements
 
