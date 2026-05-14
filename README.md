@@ -296,7 +296,7 @@ comsol_mcp/
 
 ## 联系方式
 
-维护者：mr jiang <jiang-jc24@mails.tsinghua.edu.cn>
+维护者：蒋铖 <jiang-jc24@mails.tsinghua.edu.cn>
 
 ## License
 
