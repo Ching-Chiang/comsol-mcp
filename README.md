@@ -118,6 +118,21 @@ Claude Desktop 或其他 MCP host 可以参考：
 
 ## 推荐工作流
 
+```mermaid
+flowchart LR
+    User["User / AI Agent"] --> Host["MCP Host"]
+    Host --> MCP["comsol-mcp<br/>persistent MCP process"]
+    MCP --> PortCheck["check_server_port<br/>server_connect"]
+    PortCheck --> Server["COMSOL Multiphysics Server<br/>shared server-side model"]
+    Desktop["COMSOL Desktop<br/>visual client"] --> Server
+    MCP --> Lock["visible-main lock<br/>tag + label + path"]
+    Lock --> Server
+    MCP --> Tools["MCP tools<br/>parameters, geometry, physics,<br/>solver, study, snapshot"]
+    Tools --> Server
+    Server --> Desktop
+    Tools --> Snapshot["save-copy snapshots<br/>current main path preserved"]
+```
+
 1. 手动启动 `COMSOL Multiphysics Server`。
 2. 记录 Server 控制台显示的真实端口。
 3. 启动本项目的 MCP Server，并保持进程运行。
