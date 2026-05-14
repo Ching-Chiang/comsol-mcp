@@ -18,8 +18,6 @@ dependencies = [
   "JPype1"
 ]
 
-[project.optional-dependencies]
-dev = ["pytest"]
 keywords = ["comsol", "mcp", "simulation", "multiphysics", "desktop", "server"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -29,6 +27,9 @@ classifiers = [
   "Topic :: Scientific/Engineering",
   "Topic :: Scientific/Engineering :: Artificial Intelligence"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 comsol-mcp = "comsol_mcp.mcp_server:main"

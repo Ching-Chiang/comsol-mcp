@@ -100,6 +100,11 @@ SAFE_READ_TOOLS = {
     "get_parameters",
     "evaluate_expressions",
     "get_core_metrics",
+    "list_physics",
+    "list_physics_features",
+    "list_solver_config",
+    "list_solver_features",
+    "run_study_status",
 }
 SAFE_VISIBLE_MAIN_WRITE_TOOLS = {
     "set_parameters",
@@ -114,6 +119,16 @@ SAFE_VISIBLE_MAIN_WRITE_TOOLS = {
     "run_visible_main_iteration",
     "save_main_model_snapshot",
     "save_model",
+    "create_physics",
+    "remove_physics",
+    "create_physics_feature",
+    "update_physics_feature",
+    "remove_physics_feature",
+    "set_physics_selection",
+    "manage_variables",
+    "create_solver_config",
+    "configure_solver",
+    "run_study_async",
 }
 RESTRICTED_TOOLS = {
     "commit_current_main_model",

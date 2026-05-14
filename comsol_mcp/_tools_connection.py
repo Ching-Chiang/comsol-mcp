@@ -8,13 +8,15 @@ from typing import Any
 
 import comsol_mcp._server as _srv
 from comsol_mcp._state import (
-    _run_tool, _json, _now_iso, _require_mph, _port_is_open,
+    _run_tool, _run_tool_readonly, _json, _now_iso, _require_mph, _port_is_open,
     _server_missing_guidance, _mark_awaiting_manual_server,
     _write_workflow_state, _read_workflow_state, _write_status,
     _status_payload, _safe_model_label, _resolve_output_path, OUTPUTS_DIR,
     _friendly_connection_error,
 )
-from comsol_mcp._connection import _disconnect_locked, _ensure_client_shell, _require_client
+from comsol_mcp._connection import (
+    _disconnect_locked, _ensure_client_shell, _timed_call,
+)
 from comsol_mcp._model import _set_current_model, _adopt_model_by_name
 
 
@@ -26,29 +28,49 @@ def server_info() -> str:
     """
 
     def _impl() -> dict[str, Any]:
-        _require_mph()
+        mph_ok = True
+        mph_err = ""
+        try:
+            _require_mph()
+        except Exception as exc:
+            mph_ok = False
+            mph_err = str(exc)
+
         loaded_model_count = 0
-        if _srv._client is not None and _srv._client_connected:
+        if mph_ok and _srv._client is not None and _srv._client_connected:
             try:
-                loaded_model_count = len(list(_srv._client.models()))
+                loaded_model_count = _timed_call(
+                    lambda: len(list(_srv._client.models())),
+                    timeout=3.0,
+                    error_msg="Model enumeration timed out",
+                )
             except Exception:
-                loaded_model_count = 0
-        return {
+                loaded_model_count = -1
+
+        result: dict[str, Any] = {
             "version": _srv.VERSION,
-            "mph_version": getattr(_srv._get_mph(), "__version__", ""),
             "comsol_root": str(_srv.COMSOL_ROOT),
             "mcp_home": str(_srv.COMSOL_SERVER_MCP_HOME),
             "workflow_file": str(_srv.WORKFLOW_FILE),
-            "mphserver_exe": str(_srv.COMSOL_MPHSERVER),
-            "mphclient_exe": str(_srv.COMSOL_MPHCLIENT),
             "status_file": str(_srv.STATUS_FILE),
             "recommended_entrypoint": 'server_connect("localhost", <actual_port>)',
             "server_start_role": "advanced/manual-lifecycle",
             "server_state": _status_payload(),
             "loaded_model_count": loaded_model_count,
         }
+        if mph_ok:
+            result["mph_version"] = getattr(_srv._get_mph(), "__version__", "")
+            result["mphserver_exe"] = str(_srv.COMSOL_MPHSERVER)
+            result["mphclient_exe"] = str(_srv.COMSOL_MPHCLIENT)
+        else:
+            result["mph_available"] = False
+            result["mph_error"] = mph_err
+            result["message"] = "MPh is not available. Install it or check Python environment."
+        if loaded_model_count < 0:
+            result["connection_warning"] = "Could not enumerate models — server connection may be stale."
+        return result
 
-    return _run_tool("server_info", _impl)
+    return _run_tool_readonly("server_info", _impl)
 
 
 def check_server_port(host: str = _srv.DEFAULT_HOST, port: int = _srv.DEFAULT_PORT) -> str:
@@ -82,7 +104,7 @@ def check_server_port(host: str = _srv.DEFAULT_HOST, port: int = _srv.DEFAULT_PO
             "workflow": workflow,
         }
 
-    return _run_tool("check_server_port", _impl)
+    return _run_tool_readonly("check_server_port", _impl)
 
 
 def server_start(
@@ -119,7 +141,11 @@ def server_start(
         )
         _srv._server_started_by_mcp = True
         client = _ensure_client_shell()
-        client.connect(_srv._server.port, _srv.DEFAULT_HOST)
+        _timed_call(
+            client.connect, _srv._server.port, _srv.DEFAULT_HOST,
+            timeout=60.0,
+            error_msg=f"Connect to MCP-started server {_srv.DEFAULT_HOST}:{_srv._server.port} timed out.",
+        )
         _write_status()
         return {
             "started_by_mcp": True,
@@ -140,7 +166,7 @@ def server_start(
     return _run_tool("server_start", _impl)
 
 
-def server_connect(host: str = _srv.DEFAULT_HOST, port: int = _srv.DEFAULT_PORT, model_name: str = "") -> str:
+def server_connect(host: str = _srv.DEFAULT_HOST, port: int = _srv.DEFAULT_PORT, model_name: str = "", timeout_seconds: float = 30.0) -> str:
     """Default entrypoint: attach MCP to an already running COMSOL Multiphysics Server.
 
     This is the recommended tool for the visible Desktop workflow:
@@ -152,6 +178,21 @@ def server_connect(host: str = _srv.DEFAULT_HOST, port: int = _srv.DEFAULT_PORT,
         _require_mph()
         requested_host = host or _srv.DEFAULT_HOST
         requested_port = int(port)
+        effective_timeout = float(timeout_seconds) if float(timeout_seconds) > 0 else 30.0
+
+        # Pre-check: TCP port probe before attempting the heavy mph connection
+        if not _port_is_open(requested_host, requested_port, timeout_seconds=2.0):
+            _mark_awaiting_manual_server(requested_host, requested_port, "server_connect")
+            return {
+                "connected": False,
+                "host": requested_host,
+                "port": requested_port,
+                "error": (
+                    f"Port {requested_port} on {requested_host} is not open. "
+                    "COMSOL Multiphysics Server is likely not running or listening on a different port."
+                ),
+                "suggestion": "Start COMSOL Server manually and verify the port number before retrying.",
+            }
         preserve_local_server = bool(
             _srv._server is not None
             and _srv._server_started_by_mcp
@@ -166,8 +207,21 @@ def server_connect(host: str = _srv.DEFAULT_HOST, port: int = _srv.DEFAULT_PORT,
             _srv._server_started_by_mcp = False
         client = _ensure_client_shell()
         try:
-            client.connect(requested_port, requested_host)
+            _timed_call(
+                client.connect, requested_port, requested_host,
+                timeout=effective_timeout,
+                error_msg=(
+                    f"Connection to {requested_host}:{requested_port} timed out after {effective_timeout}s. "
+                    "Ensure COMSOL Multiphysics Server is running and the port is correct."
+                ),
+            )
+        except RuntimeError:
+            # Timeout or connection failure — discard the client so next
+            # attempt gets a fresh one rather than reusing a stale socket.
+            _srv._client = None
+            raise
         except Exception as exc:
+            _srv._client = None
             _mark_awaiting_manual_server(requested_host, requested_port, "server_connect")
             raise _friendly_connection_error(exc, requested_host, requested_port) from exc
         _srv._client_connected = True

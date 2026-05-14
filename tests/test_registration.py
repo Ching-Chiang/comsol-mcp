@@ -36,6 +36,21 @@ EXPECTED_TOOLS = [
     "run_feature",
     "run_study",
     "save_model",
+    "list_physics",
+    "create_physics",
+    "remove_physics",
+    "list_physics_features",
+    "create_physics_feature",
+    "update_physics_feature",
+    "remove_physics_feature",
+    "set_physics_selection",
+    "manage_variables",
+    "list_solver_config",
+    "create_solver_config",
+    "list_solver_features",
+    "configure_solver",
+    "run_study_async",
+    "run_study_status",
 ]
 
 

@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from comsol_mcp._state import (
-    _run_tool, _safe_model_label,
+    _run_tool, _run_tool_readonly, _safe_model_label,
 )
 from comsol_mcp._model import _require_visible_main
 from comsol_mcp._model_ops import (
@@ -15,7 +15,7 @@ from comsol_mcp._model_ops import (
     _find_initialized_solution_tag, _read_last_time_day,
     _eval_global_last, _eval_domain_average_last,
     _eval_boundary_average_last, _eval_extremum_last,
-    _numeric_result,
+    _numeric_result, _evaluate_aggregate, _coerce_eval_value, _last_scalar,
 )
 
 
@@ -27,25 +27,79 @@ def get_parameters() -> str:
         rows = _parameter_rows(model)
         return {"label": _safe_model_label(model), "parameters": rows, "count": len(rows)}
 
-    return _run_tool("get_parameters", _impl)
+    return _run_tool_readonly("get_parameters", _impl)
 
 
-def evaluate_expressions(expressions_json: str = "[]") -> str:
-    """Evaluate one or more expressions on the current server-side model."""
+def evaluate_expressions(expressions_json: str = "[]", max_result_size: int = 0) -> str:
+    """Evaluate one or more expressions on the current server-side model.
+
+    Each expression item supports: {"name": "...", "expression": "...",
+      "aggregate": "max"|"min"|"avg"|"integral"|"none",
+      "domains": [1,2], "boundaries": [5,6], "time_point": "last"|"all"|"N"}.
+
+    Backward compatible: [{"name": "...", "expression": "..."}] still works.
+    max_result_size: when > 0, truncate arrays exceeding this size (chars).
+    """
 
     def _impl() -> dict[str, Any]:
         model = _require_visible_main("evaluate_expressions")
         parsed = json.loads(expressions_json)
         if not isinstance(parsed, list):
             raise ValueError("expressions_json must be a JSON array.")
-        results = _evaluate_named_expressions(model, parsed)
+        results = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                raise ValueError("Each expression entry must be an object.")
+            name = str(item.get("name", "")).strip()
+            expression = str(item.get("expression", "")).strip()
+            aggregate = str(item.get("aggregate", "none")).strip().lower()
+            domains = item.get("domains")
+            boundaries = item.get("boundaries")
+            time_point = str(item.get("time_point", "last")).strip()
+
+            if not name:
+                raise ValueError("Expression name is required.")
+            if not expression:
+                raise ValueError(f'Expression is required for "{name}".')
+
+            row: dict[str, Any] = {"name": name, "expression": expression}
+
+            int_domains = [int(d) for d in domains] if domains else None
+            int_bounds = [int(b) for b in boundaries] if boundaries else None
+
+            try:
+                if aggregate and aggregate != "none":
+                    value = _evaluate_aggregate(model, expression, aggregate, int_domains, int_bounds, time_point)
+                    row["value"] = value
+                    row["last_value"] = value
+                    row["aggregate"] = aggregate
+                else:
+                    raw = model.evaluate(expression)
+                    value = _coerce_eval_value(raw)
+                    row["value"] = value
+                    row["last_value"] = _coerce_eval_value(_last_scalar(value))
+
+                # Truncation
+                if max_result_size > 0:
+                    serialized = json.dumps(row["value"], default=str)
+                    if len(serialized) > max_result_size:
+                        row["value"] = serialized[:max_result_size] + "...(truncated)"
+                        row["_truncated"] = True
+                        row["original_size"] = len(serialized)
+
+                row["ok"] = True
+            except Exception as exc:
+                row["ok"] = False
+                row["error"] = str(exc)
+            results.append(row)
+
         return {
             "label": _safe_model_label(model),
             "results": results,
             "count": len(results),
         }
 
-    return _run_tool("evaluate_expressions", _impl)
+    return _run_tool_readonly("evaluate_expressions", _impl)
 
 
 def get_core_metrics() -> str:
@@ -88,7 +142,7 @@ def get_core_metrics() -> str:
             "results": results,
         }
 
-    return _run_tool("get_core_metrics", _impl)
+    return _run_tool_readonly("get_core_metrics", _impl)
 
 
 def set_parameters(parameters_json: str) -> str:

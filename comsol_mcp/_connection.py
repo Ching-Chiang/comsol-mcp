@@ -3,22 +3,39 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 from typing import Any
 
-from comsol_mcp._server import (
-    _client, _client_connected, _connected_host, _connected_port,
-    _server, _current_model, _current_model_origin, _current_model_path,
-    _server_started_by_mcp,
-    _get_mph,
-)
+from comsol_mcp._server import _get_mph
 import comsol_mcp._server as _srv
+
+
+def _timed_call(func, *args, timeout: float = 30.0, error_msg=""):
+    """Call a potentially slow function with a hard timeout.
+
+    The key difference from ``with ThreadPoolExecutor``: uses
+    ``shutdown(wait=False)`` so that a hung Java call never blocks
+    the caller.  The worker thread is a daemon and will not prevent
+    process exit.
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(func, *args)
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise RuntimeError(
+            error_msg
+            or f"Operation timed out after {timeout}s"
+        )
+    finally:
+        executor.shutdown(wait=False)
 
 
 def _disconnect_locked(*, shutdown_server: bool = False) -> None:
     if _srv._client is not None:
         try:
-            _srv._client.disconnect()
+            _timed_call(_srv._client.disconnect, timeout=15.0)
         except Exception as exc:
             if "not connected" not in str(exc).lower():
                 _srv._last_error = f"Disconnect failed: {exc}"
@@ -26,6 +43,7 @@ def _disconnect_locked(*, shutdown_server: bool = False) -> None:
             _srv._client_connected = False
             _srv._connected_host = ""
             _srv._connected_port = None
+            _srv._client = None
 
     _srv._current_model = None
     _srv._current_model_origin = ""

@@ -181,6 +181,160 @@ def _eval_extremum_last(model: Any, feature_type: str, expression: str, domains:
         return None
 
 
+def _get_model_dimension(model: Any) -> int:
+    """Get the configured or auto-detected spatial dimension of the model.
+
+    Priority:
+    1. Workflow state `model_dimension` (set by configure_single_main_workflow)
+    2. Auto-detect from existing physics interfaces
+    3. Default to 0 (unknown)
+    """
+    # Check workflow state first
+    try:
+        from comsol_mcp._state import _read_workflow_state
+        state = _read_workflow_state()
+        dim = int(state.get("model_dimension", 0))
+        if dim in (1, 2, 3):
+            return dim
+    except Exception:
+        pass
+
+    # Auto-detect from existing physics interfaces
+    try:
+        comps = list(model.java.component().tags())
+        if comps:
+            comp = model.java.component(comps[0])
+            phys_tags = list(comp.physics().tags())
+            if phys_tags:
+                phys = comp.physics(phys_tags[0])
+                # Try common API methods for getting spatial dimension from physics
+                for method_name in ("getNDim", "getSpatialDim", "sdim", "getDim"):
+                    try:
+                        val = getattr(phys, method_name)
+                        if callable(val):
+                            d = int(val())
+                            if d in (1, 2, 3):
+                                return d
+                        else:
+                            d = int(val)
+                            if d in (1, 2, 3):
+                                return d
+                    except Exception:
+                        continue
+                # Try reading the physics selection dimension
+                try:
+                    sel = phys.feature().tags()
+                    if sel:
+                        feat = phys.feature(sel[0])
+                        # The selection geom dimension reveals spatial dim
+                        for attr_name in ("_geomDim", "dim"):
+                            try:
+                                d = int(getattr(feat.selection(), attr_name))
+                                if d in (1, 2, 3):
+                                    return d
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return 0
+
+
+def _evaluate_aggregate(
+    model: Any,
+    expression: str,
+    aggregate: str,
+    domains: list[int] | None = None,
+    boundaries: list[int] | None = None,
+    time_point: str = "last",
+) -> Any:
+    """Evaluate an expression with aggregation. Returns scalar for aggregated, raw for 'none'.
+
+    Automatically selects correct COMSOL result feature type based on model dimension:
+    - 3D: domains→Volume, boundaries→Surface
+    - 2D: domains→Surface, boundaries→Line
+    - 1D: domains→Line, boundaries→Point
+    """
+    aggregate = (aggregate or "none").lower().strip()
+    if aggregate == "none":
+        raw = model.evaluate(expression)
+        return _coerce_eval_value(raw)
+
+    _clear_numerical(model)
+    numerical_list = model.java.result().numerical()
+
+    # Get spatial dimension from workflow config or auto-detect
+    dim = _get_model_dimension(model)
+    if dim == 0:
+        dim = 2  # Default to 2D if unknown (common for structural mechanics)
+
+    # Map: (dim, entity) → suffix for max/min/int
+    # 3D: domains=Volume, boundaries=Surface
+    # 2D: domains=Surface, boundaries=Line
+    # 1D: domains=Line, boundaries=Point (rare)
+    if boundaries:
+        geom_dim = max(dim - 1, 1)  # boundary is (dim-1) entity
+    elif domains:
+        geom_dim = dim
+    else:
+        geom_dim = dim
+
+    dim_suffix = {3: "Volume", 2: "Surface", 1: "Line"}.get(geom_dim, "Surface")
+
+    # Choose correct COMSOL result feature type
+    if aggregate == "max":
+        if domains or boundaries:
+            tag, ftype = "agg1", f"Max{dim_suffix}"
+        else:
+            tag, ftype = "agg1", f"Max{dim_suffix}"
+    elif aggregate == "min":
+        if domains or boundaries:
+            tag, ftype = "agg1", f"Min{dim_suffix}"
+        else:
+            tag, ftype = "agg1", f"Min{dim_suffix}"
+    elif aggregate == "avg":
+        if domains or boundaries:
+            tag, ftype = "agg1", f"Int{dim_suffix}"
+        else:
+            tag, ftype = "agg1", "EvalGlobal"
+    elif aggregate == "integral":
+        tag, ftype = "agg1", f"Int{dim_suffix}"
+    else:
+        raise ValueError(f'Unknown aggregate "{aggregate}". Use max, min, avg, integral, or none.')
+
+    numerical_list.create(tag, ftype)
+    feature = model.java.result().numerical(tag)
+
+    # Set selection with correct geometric dimension
+    if domains:
+        feature.selection().geom("geom1", dim)
+        feature.selection().set(domains)
+    elif boundaries:
+        feature.selection().geom("geom1", max(dim - 1, 1))
+        feature.selection().set(boundaries)
+
+    # Set expression(s) based on aggregate type
+    if aggregate == "avg" and (domains or boundaries):
+        feature.set("expr", [expression, "1"])
+    else:
+        feature.set("expr", [expression])
+
+    if time_point and time_point != "all":
+        feature.setIndex("looplevelinput", time_point, 0)
+
+    feature.run()
+    values = feature.getReal()
+
+    if aggregate == "avg" and (domains or boundaries):
+        denom = values[1][0]
+        if denom == 0:
+            return float("nan")
+        return float(values[0][0] / denom)
+    return float(values[0][0])
+
+
 # ---------------------------------------------------------------------------
 # Model tree
 # ---------------------------------------------------------------------------

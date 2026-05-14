@@ -17,13 +17,11 @@ from comsol_mcp._server import (
     COMSOL_SERVER_MCP_HOME, COMSOL_ROOT, DEFAULT_HOST,
     LOGS_DIR, OUTPUTS_DIR, STATUS_FILE, WORKFLOW_FILE, OPERATIONS_FILE, SERVER_LOG,
     _runtime_lock, _background_jobs_lock, _background_jobs,
-    _client, _client_connected, _connected_host, _connected_port,
-    _current_model, _current_model_origin, _current_model_path,
-    _server, _server_started_by_mcp, _last_command, _last_error,
     VERSION, WORKSPACE_ROOT, RECOMMENDED_DESKTOP_FLOW,
     _ensure_dirs, _setup_logging,
     _get_mph, _get_mph_error,
 )
+import comsol_mcp._server as _srv
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +111,7 @@ def _default_workflow_state() -> dict[str, Any]:
         "main_model_tag": "",
         "main_model_label": "",
         "main_model_path": "",
+        "model_dimension": 0,
         "workflow_stage": "awaiting_manual_server",
         "mcp_client_lifecycle": "persistent-required",
         "one_shot_client_allowed": False,
@@ -151,21 +150,21 @@ def _write_workflow_state(update: dict[str, Any]) -> dict[str, Any]:
 # Status and operations logging
 # ---------------------------------------------------------------------------
 def _status_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    connected = bool(_client_connected)
+    connected = bool(_srv._client_connected)
     server_running = False
     server_port = None
-    if _server is not None:
+    if _srv._server is not None:
         try:
-            server_running = bool(_server.running())
-            server_port = getattr(_server, "port", None)
+            server_running = bool(_srv._server.running())
+            server_port = getattr(_srv._server, "port", None)
         except Exception:
             server_running = False
-            server_port = getattr(_server, "port", None)
+            server_port = getattr(_srv._server, "port", None)
     elif connected:
-        server_port = _connected_port
+        server_port = _srv._connected_port
 
-    attached_to_existing_server = bool(connected and not _server_started_by_mcp)
-    server_host = _connected_host or DEFAULT_HOST
+    attached_to_existing_server = bool(connected and not _srv._server_started_by_mcp)
+    server_host = _srv._connected_host or DEFAULT_HOST
 
     payload = {
         "version": VERSION,
@@ -173,7 +172,7 @@ def _status_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "datetime": _now_iso(),
         "status": "ready" if connected else "disconnected",
         "server_running": server_running,
-        "server_started_by_mcp": _server_started_by_mcp,
+        "server_started_by_mcp": _srv._server_started_by_mcp,
         "attached_to_existing_server": attached_to_existing_server,
         "server_host": server_host,
         "server_port": server_port,
@@ -187,11 +186,11 @@ def _status_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "mcp_home": str(COMSOL_SERVER_MCP_HOME),
         "logs_dir": str(LOGS_DIR),
         "outputs_dir": str(OUTPUTS_DIR),
-        "current_model_label": _safe_model_label(_current_model),
-        "current_model_path": _current_model_path or _safe_model_path(_current_model),
-        "current_model_origin": _current_model_origin,
-        "last_command": _last_command,
-        "last_error": _last_error,
+        "current_model_label": _safe_model_label(_srv._current_model),
+        "current_model_path": _srv._current_model_path or _safe_model_path(_srv._current_model),
+        "current_model_origin": _srv._current_model_origin,
+        "last_command": _srv._last_command,
+        "last_error": _srv._last_error,
         "recommended_desktop_flow": RECOMMENDED_DESKTOP_FLOW,
         "desktop_should_connect": {
             "host": server_host,
@@ -410,8 +409,6 @@ def _workflow_snapshot_path(label: str, workflow: dict[str, Any] | None = None) 
 # Tool result / run_tool (used by every MCP tool function)
 # ---------------------------------------------------------------------------
 def _tool_result(tool: str, success: bool, data: dict[str, Any] | None = None, error: str = "") -> str:
-    from comsol_mcp._server import _last_command, _last_error  # noqa: F811
-    import comsol_mcp._server as _srv
     _srv._last_command = tool
     _srv._last_error = error
     payload = {
@@ -437,12 +434,40 @@ def _tool_result(tool: str, success: bool, data: dict[str, Any] | None = None, e
     return _json(payload)
 
 
+def _run_tool_readonly(tool: str, callback) -> str:
+    """Run a read-only tool WITHOUT acquiring _runtime_lock.
+
+    Use for tools that only read state and never modify the model or
+    connection (server_info, check_server_port, workflow_info, run_study_status).
+    These tools must remain responsive even when a long-running operation
+    (e.g., run_study_async) holds the lock.
+    """
+    _setup_logging()
+    try:
+        data = callback()
+        return _tool_result(tool, True, data=data)
+    except Exception as exc:
+        logging.exception("Tool %s failed", tool)
+        return _tool_result(tool, False, error=str(exc))
+
+
 def _run_tool(tool: str, callback) -> str:
     _setup_logging()
-    with _runtime_lock:
+    acquired = _runtime_lock.acquire(timeout=120.0)
+    if not acquired:
+        err_msg = (
+            f"Tool {tool} could not acquire the runtime lock within 120s. "
+            "Another tool is likely running a long operation (e.g., model.solve). "
+            "If using run_study, switch to run_study_async and poll run_study_status."
+        )
+        logging.error(err_msg)
+        return _tool_result(tool, False, error=err_msg)
+    try:
         try:
             data = callback()
             return _tool_result(tool, True, data=data)
         except Exception as exc:
             logging.exception("Tool %s failed", tool)
             return _tool_result(tool, False, error=str(exc))
+    finally:
+        _runtime_lock.release()

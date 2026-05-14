@@ -10,7 +10,7 @@ from typing import Any
 
 import comsol_mcp._server as _srv
 from comsol_mcp._state import (
-    _run_tool, _json, _now_iso, _resolve_path, _resolve_output_path,
+    _run_tool, _run_tool_readonly, _json, _now_iso, _resolve_path, _resolve_output_path,
     _read_workflow_state, _write_workflow_state,
     _append_operation, _status_payload, _setup_logging,
     _port_is_open, _server_missing_guidance, _mark_awaiting_manual_server,
@@ -19,7 +19,7 @@ from comsol_mcp._state import (
     _create_background_job, _update_background_job, _read_background_job,
     _sanitize_snapshot_label,
 )
-from comsol_mcp._connection import _require_client
+from comsol_mcp._connection import _require_client, _timed_call
 from comsol_mcp._model import (
     _set_current_model, _require_visible_main, _require_model,
     _block_if_visible_main_locked, _adopt_model_by_path,
@@ -35,16 +35,23 @@ def workflow_info() -> str:
     def _impl() -> dict[str, Any]:
         return {"workflow": _read_workflow_state()}
 
-    return _run_tool("workflow_info", _impl)
+    return _run_tool_readonly("workflow_info", _impl)
 
 
 def configure_single_main_workflow(
     current_main_model_path: str,
     snapshot_dir: str = "",
     snapshot_prefix: str = "",
+    model_dimension: int = 0,
     notes: str = "",
 ) -> str:
-    """Persist the single-current-main-model workflow in MCP state."""
+    """Persist the single-current-main-model workflow in MCP state.
+
+    model_dimension: spatial dimension of the model (2 or 3). Set to 0 to
+    skip. This is used by create_physics and evaluate_expressions aggregate
+    to select the correct COMSOL node types. For 2D models set to 2, for 3D
+    set to 3.
+    """
 
     def _impl() -> dict[str, Any]:
         current_main = _resolve_output_path(
@@ -55,6 +62,7 @@ def configure_single_main_workflow(
         if str(snapshot_dir or "").strip():
             snapshot_root = str(_resolve_output_path(snapshot_dir, current_main.parent))
         prefix = snapshot_prefix.strip() or current_main.stem
+        dim = int(model_dimension)
         workflow = _write_workflow_state(
             {
                 "mode": "single-current-main-model",
@@ -68,6 +76,7 @@ def configure_single_main_workflow(
                 "main_model_tag": "",
                 "main_model_label": "",
                 "main_model_path": str(current_main),
+                "model_dimension": dim,
                 "workflow_stage": "mcp_connected",
                 "notes": notes.strip()
                 or "Operate on one visible current main model; save copy snapshots without changing the visible model identity.",
@@ -91,7 +100,11 @@ def load_visible_main_model(path: str = "") -> str:
         model = _adopt_model_by_path(str(resolved))
         origin = "visible-main-adopted"
         if model is None:
-            model = client.load(resolved)
+            model = _timed_call(
+                client.load, resolved,
+                timeout=300.0,
+                error_msg=f"Loading model {resolved} timed out after 300s. Use start_visible_main_workflow_async for large models.",
+            )
             origin = "visible-main-loaded"
         _set_current_model(model, origin=origin, requested_path=str(resolved))
         removed, kept = _prune_loaded_models_locked(model)
@@ -219,7 +232,7 @@ def model_tree() -> str:
         from comsol_mcp._model_ops import _model_tree_data
         return _model_tree_data(_require_visible_main("model_tree"))
 
-    return _run_tool("model_tree", _impl)
+    return _run_tool_readonly("model_tree", _impl)
 
 
 def run_study(study_tag: str = "") -> str:
@@ -465,7 +478,11 @@ def load_current_main_model() -> str:
         model = _adopt_model_by_path(str(resolved))
         origin = "workflow-main-adopted"
         if model is None:
-            model = client.load(resolved)
+            model = _timed_call(
+                client.load, resolved,
+                timeout=300.0,
+                error_msg=f"Loading model {resolved} timed out after 300s.",
+            )
             origin = "workflow-main-loaded"
         _set_current_model(model, origin=origin, requested_path=str(resolved))
         removed, kept = _prune_loaded_models_locked(model)
